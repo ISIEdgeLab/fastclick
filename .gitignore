@@ -1,4 +1,6 @@
 *.dSYM
+*.orig
+*.rej
 +*
 .*.cmd
 .dotest
