@@ -192,6 +192,7 @@ int DPDKDevice::initialize_device(ErrorHandler *errh)
             return errh->error(
                 "Cannot initialize TX queue %u of port %u on node %u",
                 i, port_id, numa_node);
+    rte_eth_dev_set_mtu(port_id, 1528);
 
     int err = rte_eth_dev_start(port_id);
     if (err < 0)
