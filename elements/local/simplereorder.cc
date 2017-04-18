@@ -22,6 +22,7 @@
 #include <click/straccum.hh>
 #include <click/error.hh>
 #include <click/timestamp.hh>
+#include <click/packet_anno.hh>
 CLICK_DECLS
 
 SimpleReorder::SimpleReorder()
