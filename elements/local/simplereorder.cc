@@ -79,22 +79,20 @@ SimpleReorder::pull(int)
                 else
                 {
                     _held_packet = p;
-        	    _oldAnno = _held_packet->timestamp_anno();
-	            _held_packet->timestamp_anno().assign_now();
-                    _held_packet->timestamp_anno() += _timeout;
+	            FIRST_TIMESTAMP_ANNO(_held_packet).assign_now();
+                    FIRST_TIMESTAMP_ANNO(_held_packet)  += _timeout;
                     Packet *p = input(0).pull();
                     if(p)
                         _packet_counter++;
-                    return input(0).pull();
+                    return p;
                 }
             }
         }
         else
         {
-            if(_packet_counter >= _packets_to_wait || _held_packet->timestamp_anno() <= Timestamp::now())
+            if(_packet_counter >= _packets_to_wait || FIRST_TIMESTAMP_ANNO(_held_packet) <= Timestamp::now())
             {
                 Packet *p = _held_packet;
-        	p->timestamp_anno() = _oldAnno;
 	        _held_packet = NULL;
                 _packet_counter = 0;
                 return p;
