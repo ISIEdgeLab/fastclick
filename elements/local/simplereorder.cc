@@ -22,10 +22,12 @@
 #include <click/straccum.hh>
 #include <click/error.hh>
 #include <click/timestamp.hh>
+#include <click/standard/scheduleinfo.hh>
 #include <click/packet_anno.hh>
 CLICK_DECLS
 
 SimpleReorder::SimpleReorder()
+    : _task(this), _timer(&_task)
 {
 }
 
@@ -49,65 +51,143 @@ SimpleReorder::configure(Vector<String> &conf, ErrorHandler *errh)
     _active = active;
     _packets_to_wait = packets;
     _timeout = timeout;
-
+    
+    
     return 0;
 }
 
 int
-SimpleReorder::initialize(ErrorHandler *)
+SimpleReorder::initialize(ErrorHandler *errh)
 {
-    _held_packet = NULL;
+    _head = NULL;
+    _tail = NULL;
     _packet_counter = 0;
+
+    ScheduleInfo::initialize_task(this, &_task, errh);
+    _timer.initialize(this);
+
     return 0;
 }
 
+// Relative sampling!
 
+Packet*
+SimpleReorder::emit()
+{
+    Packet* p = _head;
+    _head = p->next();
+    
+    if(_head == NULL)
+    {
+        _tail = NULL;
+    }
+    else
+    {
+        SET_AGGREGATE_ANNO(_head, AGGREGATE_ANNO(p) - AGGREGATE_ANNO(_head));
+    }
+    
+    p->set_next(NULL);
+    SET_AGGREGATE_ANNO(p, (uint32_t) 0);
+    return p;
+}
+    
 Packet *
 SimpleReorder::pull(int)
 {
+    while(lock);
+    lock = true;
     // This loop will run until a return statement is reached
     while(1)
     {
-        if (_held_packet == NULL)
+        Timestamp now = Timestamp::now();
+
+        // Check if we're holding any packets
+        if (_head != NULL)
         {
-            Packet *p = input(0).pull();
-            if (!_active || !p)
-                return p;
-            else 
+            // Check if it's time to emit a held packet
+            if(AGGREGATE_ANNO(_head) >= _packets_to_wait || FIRST_TIMESTAMP_ANNO(_head) <= now)
             {
-                if((click_random() & SAMPLING_MASK) > _sampling_prob)
-                    return p;
-                else
-                {
-                    _held_packet = p;
-	            FIRST_TIMESTAMP_ANNO(_held_packet).assign_now();
-                    FIRST_TIMESTAMP_ANNO(_held_packet)  += _timeout;
-                    Packet *p = input(0).pull();
-                    if(p)
-                        _packet_counter++;
-                    return p;
-                }
+                // It's time, update the queue
+                Packet* p = emit();
+                lock = false;
+                return p;
             }
         }
-        else
+        
+        // Grab a packet and make a decision
+        Packet *p = input(0).pull();
+        if (!_active || !p)
         {
-            if(_packet_counter >= _packets_to_wait || FIRST_TIMESTAMP_ANNO(_held_packet) <= Timestamp::now())
+            lock = false;
+            return p;
+        }
+        else 
+        {            
+            if((click_random() & SAMPLING_MASK) > _sampling_prob)
             {
-                Packet *p = _held_packet;
-	        _held_packet = NULL;
-                _packet_counter = 0;
+                if(_head)
+                {
+                    SET_AGGREGATE_ANNO(_head, AGGREGATE_ANNO(_head) + 1);
+                    _packet_counter++;
+                }
+                lock = false;
                 return p;
             }
             else
             {
-                Packet *p = input(0).pull();
-                if(p)
-                    _packet_counter++;
-                return p;
+                if(_tail == NULL)
+                {
+                    _tail = p;
+                    _head = _tail;
+                    Timestamp resched = now + (3* _timeout);
+                    _timer.schedule_at(resched);
+                }
+                else
+                {
+                    _tail->set_next(p);
+                    _tail = p;
+                }
+                _tail->set_next(NULL);
+                FIRST_TIMESTAMP_ANNO(_tail).assign_now();
+                FIRST_TIMESTAMP_ANNO(_tail) += _timeout;
+                SET_AGGREGATE_ANNO(_tail, _packet_counter);
+                _packet_counter = 0;
             }
         }
-    }
+    } 
 }
+
+bool
+SimpleReorder::run_task(Task *)
+{
+    bool worked = false;
+    Timestamp now = Timestamp::now();
+
+    if(!lock)
+    {
+        lock = true;
+        Packet *p = _head;
+        if(p != NULL)
+        {
+            if(FIRST_TIMESTAMP_ANNO(p) <= now)
+            {
+                p = emit();
+                checked_output_push(1, p);
+                worked = true;
+            }
+            
+        }
+        lock = false;
+
+    }
+    if(_head)
+    {
+        Timestamp resched = now + (3* _timeout);
+        _timer.schedule_at(resched);
+    }
+    return worked;
+}
+
 
 String
 SimpleReorder::read_handler(Element *e, void *thunk)

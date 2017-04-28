@@ -4,6 +4,10 @@
 #include <click/element.hh>
 #include <click/atomic.hh>
 #include <click/timestamp.hh>
+#include <click/task.hh>
+#include <click/timer.hh>
+#include <click/notifier.hh>
+
 CLICK_DECLS
 
 /*
@@ -65,8 +69,8 @@ class SimpleReorder : public Element { public:
     SimpleReorder() CLICK_COLD;
 
     const char *class_name() const		{ return "SimpleReorder"; }
-    const char *port_count() const		{ return PORTS_1_1; }
-    const char *processing() const		{ return PULL; }
+     const char *port_count() const		{ return PORTS_1_1X2; }
+    const char *processing() const		{ return PROCESSING_A_AH; }
 
     int configure(Vector<String> &, ErrorHandler *) CLICK_COLD;
     int initialize(ErrorHandler *) CLICK_COLD;
@@ -74,6 +78,7 @@ class SimpleReorder : public Element { public:
     void add_handlers() CLICK_COLD;
 
     Packet *pull(int port);
+    bool run_task(Task*);
 
   private:
 
@@ -85,11 +90,17 @@ class SimpleReorder : public Element { public:
     uint32_t _sampling_prob;		// out of (1<<SAMPLING_SHIFT)
     uint32_t _packets_to_wait;          // # Packets before emitting held packet
     Timestamp _timeout;                 // Timeout to emit held packet
-    Timestamp _oldAnno;
-    Packet * _held_packet;              // The held packet
-    uint32_t _packet_counter;           // Packets seen so far
+    Packet * _head;                     // Head of queue
+    Packet * _tail;                     // Tail of queue
+    uint32_t _packet_counter;           // Relative diff since last admission
     bool _active;
 
+    bool lock;
+    Task _task;
+    Timer _timer;
+
+    Packet *emit();
+    
     static String read_handler(Element *, void *) CLICK_COLD;
     static int prob_write_handler(const String &, Element *, void *, ErrorHandler *) CLICK_COLD;
     static int timeout_write_handler(const String &, Element *, void *, ErrorHandler *) CLICK_COLD;
