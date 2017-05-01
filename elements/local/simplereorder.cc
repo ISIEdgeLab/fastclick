@@ -63,6 +63,7 @@ SimpleReorder::initialize(ErrorHandler *errh)
     _tail = NULL;
     _packet_counter = 0;
 
+    lock = false;
     ScheduleInfo::initialize_task(this, &_task, errh);
     _timer.initialize(this);
 
@@ -139,7 +140,9 @@ SimpleReorder::pull(int)
                 {
                     _tail = p;
                     _head = _tail;
-                    Timestamp resched = now + (3* _timeout);
+                    // Kernel version does not support multiply
+                    // so using add instead
+                    Timestamp resched = now + _timeout;
                     _timer.schedule_at(resched);
                 }
                 else
@@ -163,6 +166,7 @@ SimpleReorder::run_task(Task *)
     bool worked = false;
     Timestamp now = Timestamp::now();
 
+    
     if(!lock)
     {
         lock = true;
@@ -182,7 +186,8 @@ SimpleReorder::run_task(Task *)
     }
     if(_head)
     {
-        Timestamp resched = now + (3* _timeout);
+
+        Timestamp resched = FIRST_TIMESTAMP_ANNO(_head);
         _timer.schedule_at(resched);
     }
     return worked;
