@@ -329,8 +329,8 @@ TargetedLoss::drop_write_handler(const String &, Element* e, void*, ErrorHandler
 void
 TargetedLoss::add_handlers()
 {
-    add_read_handler("sampling_prob", read_handler, h_sample);
-    add_write_handler("sampling_prob", prob_write_handler, h_sample);
+    add_read_handler("drop_prob", read_handler, h_sample);
+    add_write_handler("drop_prob", prob_write_handler, h_sample);
     add_data_handlers("active", Handler::OP_READ | Handler::OP_WRITE | Handler::CHECKBOX, &_active);
     add_data_handlers("burst", Handler::OP_READ | Handler::OP_WRITE, &_burst);
     add_data_handlers("drops", Handler::OP_READ, &_drops);
