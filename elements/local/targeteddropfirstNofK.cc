@@ -1,6 +1,6 @@
 // -*- mode: c++; c-basic-offset: 4 -*-
 /*
- * targeteddropfirstnofk.{cc,hh} -- element probabilistically hold/reorder packets
+ * targeteddropfirstnofk.{cc,hh} -- element drop first N of K packets
  * Erik Kline
  *
  * Copyright (c) 2017 University of Southern California

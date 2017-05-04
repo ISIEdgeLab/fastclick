@@ -1,6 +1,6 @@
 // -*- mode: c++; c-basic-offset: 4 -*-
 /*
- * targetedloss.{cc,hh} -- probabilistically drop packets of specific prefixes
+ * targeteddroplastnofk.{cc,hh} -- element to drop last N of K packets.
  * Erik Kline
  *
  * Copyright (c) 2017 University of Southern California
@@ -17,7 +17,7 @@
  */
 
 #include <click/config.h>
-#include "targetedloss.hh"
+#include "targeteddroplastNofK.hh"
 #include <click/args.hh>
 #include <click/straccum.hh>
 #include <click/error.hh>
@@ -25,17 +25,17 @@
 #include <clicknet/ip.h>
 CLICK_DECLS
 
-TargetedLoss::TargetedLoss()
+TargetedDropLastNofK::TargetedDropLastNofK()
 {
     
 }
 
 int
-TargetedLoss::configure(Vector<String> &conf, ErrorHandler *errh)
+TargetedDropLastNofK::configure(Vector<String> &conf, ErrorHandler *errh)
 {
-    uint32_t sampling_prob = 0xFFFFFFFFU;
     bool active = true;
-    uint32_t burst = 1;
+    uint32_t n = 1;
+    uint32_t k = 100;
     
     IPAddress source = IPAddress(0);
     IPAddress smask = IPAddress(0);
@@ -47,8 +47,8 @@ TargetedLoss::configure(Vector<String> &conf, ErrorHandler *errh)
     _source_set = _dest_set = false;
 
     if (Args(conf, this, errh)
-	.read_p("P", FixedPointArg(SAMPLING_SHIFT), sampling_prob)
-	.read("BURST", burst)
+	.read("N", n)
+        .read("K", k)
 	.read("SOURCE", IPPrefixArg(true), source, smask)
         .read("DEST", IPPrefixArg(true), dest, dmask)
         .read("PREFIX", IPPrefixArg(true), prefix, pmask)
@@ -62,6 +62,12 @@ TargetedLoss::configure(Vector<String> &conf, ErrorHandler *errh)
         return -1;
     }
 
+    if (n > k)
+    {
+        errh->error("Cannot set N %u to be greater than K %u", n, k);
+        return -1;
+    }
+    
     if(source != IPAddress(0) || dest != IPAddress(0))
     {
         if(source != IPAddress(0))
@@ -82,14 +88,14 @@ TargetedLoss::configure(Vector<String> &conf, ErrorHandler *errh)
         _prefix.net = prefix;
         _prefix.mask = pmask;
     }
-        
-    // OK: set variables
-    _sampling_prob = sampling_prob;
-    _active = active;
-    _burst = burst;
 
-#ifdef DEBUGGING_TARGET_LOSS
-    click_chatter("Burst %d, Active %d, Probability %s", _burst, _active, cp_unparse_real2(_sampling_prob, SAMPLING_SHIFT).c_str());
+    _N = n;
+    _K = k;
+    _packet_count = _K;
+    _active = active;
+
+#ifdef DEBUGGING_TARGET_DROP_FIRST_N
+    click_chatter("N %d, K %d, Active %d", _N, _K, _active);
     click_chatter("Source %s/%s, Dest %s/%s, Prefix %s/%s", _source.net.unparse().c_str(),  _source.mask.unparse().c_str(),  _dest.net.unparse().c_str(), _dest.mask.unparse().c_str(), _prefix.net.unparse().c_str(), _prefix.mask.unparse().c_str());
 #endif
     
@@ -97,17 +103,15 @@ TargetedLoss::configure(Vector<String> &conf, ErrorHandler *errh)
 }
 
 int
-TargetedLoss::initialize(ErrorHandler *)
+TargetedDropLastNofK::initialize(ErrorHandler *)
 {
-    _sampling = false;
-    _packet_count = 0;
     _drops = 0;
     return 0;
 }
 
 
 Packet *
-TargetedLoss::pull(int)
+TargetedDropLastNofK::pull(int)
 {
     Packet* p = input(0).pull();
 
@@ -153,64 +157,59 @@ TargetedLoss::pull(int)
     // Our packet matches, yay!
     if(match)
     {
-        // If we're not already sampling, check if we should be sampling
-        if(!_sampling && (click_random() & SAMPLING_MASK) <= _sampling_prob)
+        // Count the packet since it matches
+        _packet_count--;
+        // Check if we're in the last _N portion or in the _K - _N portion
+        if(_packet_count <= _N && _packet_count > 0)
         {
-            _sampling = true;
-        }
-        if(_sampling)
-        {
-            // We're sampling, kill the packet, and update the burst counter.
+            // In the _N portion, drop the packets.
             p->kill();
             _drops++;
-            _packet_count++;
-            if(_packet_count >= _burst)
-            {
-                _sampling = false;
-                _packet_count = 0;
-            }
             return NULL;
         }
+        if((signed) _packet_count <= 0)
+        {
+            // Have we seen _K packets, if so, reset count and return to _N portion
+            _packet_count = _K;
+        }
+        click_chatter("%d", _packet_count);
     }
     // We made it here, return the unsampled packet.
     return p;
 }
 
 String
-TargetedLoss::read_handler(Element *e, void *thunk)
+TargetedDropLastNofK::read_handler(Element *e, void *thunk)
 {
-    TargetedLoss *tl = static_cast<TargetedLoss *>(e);
+    TargetedDropLastNofK *tdlnk = static_cast<TargetedDropLastNofK *>(e);
     switch ((intptr_t)thunk) {
-      case h_sample:
-        return cp_unparse_real2(tl->_sampling_prob, SAMPLING_SHIFT);
       case h_config: {
 	StringAccum sa;
-	sa << "SAMPLE " << cp_unparse_real2(tl->_sampling_prob, SAMPLING_SHIFT)
-           << ", BURST " << tl->_burst;
+	sa << "N " << tdlnk->_N << ", K " << tdlnk->_K;
 
-        if(tl->_source_set || tl->_dest_set)
+        if(tdlnk->_source_set || tdlnk->_dest_set)
         {
-            if(tl->_source_set)
+            if(tdlnk->_source_set)
             {
-                sa << ", SOURCE " << tl->_source.net.unparse() << "/" << tl->_source.mask.unparse() << " ";
+                sa << ", SOURCE " << tdlnk->_source.net.unparse() << "/" << tdlnk->_source.mask.unparse() << " ";
             }
-            if(tl->_dest_set)
+            if(tdlnk->_dest_set)
             {
-                sa << ", DEST " << tl->_dest.net.unparse() << "/" << tl->_dest.mask.unparse() << " ";
+                sa << ", DEST " << tdlnk->_dest.net.unparse() << "/" << tdlnk->_dest.mask.unparse() << " ";
             }
         }
         else
         {
-            sa << ", PREFIX " << tl->_prefix.net.unparse() << "/" << tl->_prefix.mask.unparse() <<  " ";
+            sa << ", PREFIX " << tdlnk->_prefix.net.unparse() << "/" << tdlnk->_prefix.mask.unparse() <<  " ";
         }
             
 	return sa.take_string();
       }
       case h_source: {
         StringAccum sa;
-        if(tl->_source_set)
+        if(tdlnk->_source_set)
         {
-            sa << "SOURCE " << tl->_source.net.unparse() << "/" << tl->_source.mask.unparse();
+            sa << "SOURCE " << tdlnk->_source.net.unparse() << "/" << tdlnk->_source.mask.unparse();
         }
         else
         {
@@ -220,9 +219,9 @@ TargetedLoss::read_handler(Element *e, void *thunk)
       }
       case h_dest: {
         StringAccum sa;
-        if(tl->_dest_set)
+        if(tdlnk->_dest_set)
         {
-            sa << "DEST " << tl->_dest.net.unparse() << "/" << tl->_dest.mask.unparse();
+            sa << "DEST " << tdlnk->_dest.net.unparse() << "/" << tdlnk->_dest.mask.unparse();
         }
         else
         {
@@ -232,13 +231,13 @@ TargetedLoss::read_handler(Element *e, void *thunk)
       }
       case h_prefix: {
         StringAccum sa;
-        if(tl->_source_set || tl->_dest_set)
+        if(tdlnk->_source_set || tdlnk->_dest_set)
         {
             sa << "Source or Dest set!";
         }
         else
         {
-            sa << "PREFIX " << tl->_prefix.net.unparse() << "/" << tl->_prefix.mask.unparse();
+            sa << "PREFIX " << tdlnk->_prefix.net.unparse() << "/" << tdlnk->_prefix.mask.unparse();
         }
         return sa.take_string();
               
@@ -250,19 +249,20 @@ TargetedLoss::read_handler(Element *e, void *thunk)
 }
 
 int
-TargetedLoss::prefix_write_handler(const String &str, Element *e, void *thunk, ErrorHandler *errh)
+TargetedDropLastNofK::prefix_write_handler(const String &str, Element *e, void *thunk, ErrorHandler *errh)
 {
-    TargetedLoss *tl = static_cast<TargetedLoss *>(e);
+    TargetedDropLastNofK *tdlnk = static_cast<TargetedDropLastNofK *>(e);
     IPAddress net;
     IPAddress mask;
+    tdlnk->_packet_count = tdlnk->_K;
     switch ((intptr_t)thunk) {
       case h_prefix:
           if(!IPPrefixArg(true).parse(cp_uncomment(str), net, mask))
               return errh->error("Invalid prefix %s", str.c_str());
-          tl->_source_set = false;
-          tl->_dest_set = false;
-          tl->_prefix.net = net;
-          tl->_prefix.mask = mask;
+          tdlnk->_source_set = false;
+          tdlnk->_dest_set = false;
+          tdlnk->_prefix.net = net;
+          tdlnk->_prefix.mask = mask;
           return 0;
       case h_source: {
           Vector<String> args;
@@ -273,13 +273,13 @@ TargetedLoss::prefix_write_handler(const String &str, Element *e, void *thunk, E
               .read("CLEAROTHER", clear_dest)
               .complete() < 0)
               return -1;
-          tl->_source_set = true;
-          tl->_source.net = net;
-          tl->_source.mask = mask;
+          tdlnk->_source_set = true;
+          tdlnk->_source.net = net;
+          tdlnk->_source.mask = mask;
 
           if(clear_dest)
           {
-              tl->_dest_set = false;
+              tdlnk->_dest_set = false;
           }
           return 0;
       }
@@ -292,13 +292,13 @@ TargetedLoss::prefix_write_handler(const String &str, Element *e, void *thunk, E
               .read("CLEAROTHER", clear_source)
               .complete() < 0)
               return -1;
-          tl->_dest_set = true;
-          tl->_dest.net = net;
-          tl->_dest.mask = mask;
+          tdlnk->_dest_set = true;
+          tdlnk->_dest.net = net;
+          tdlnk->_dest.mask = mask;
 
           if(clear_source)
           {
-              tl->_source_set = false;
+              tdlnk->_source_set = false;
           }
           return 0;
       }
@@ -309,30 +309,18 @@ TargetedLoss::prefix_write_handler(const String &str, Element *e, void *thunk, E
 
 
 int
-TargetedLoss::prob_write_handler(const String &str, Element *e, void *thunk, ErrorHandler *errh)
+TargetedDropLastNofK::drop_write_handler(const String &, Element* e, void*, ErrorHandler*)
 {
-    TargetedLoss *tl = static_cast<TargetedLoss *>(e);
-    uint32_t p;
-    if (!FixedPointArg(SAMPLING_SHIFT).parse(cp_uncomment(str), p) || p > (1 << SAMPLING_SHIFT))
-	return errh->error("Must be given a number between 0.0 and 1.0");
-    tl->_sampling_prob = p;
-    return 0;
-}
-
-int
-TargetedLoss::drop_write_handler(const String &, Element* e, void*, ErrorHandler*)
-{
-    TargetedLoss *tl = static_cast<TargetedLoss *>(e);
-    tl->_drops = 0;
+    TargetedDropLastNofK *tdlnk = static_cast<TargetedDropLastNofK *>(e);
+    tdlnk->_drops = 0;
 }
     
 void
-TargetedLoss::add_handlers()
+TargetedDropLastNofK::add_handlers()
 {
-    add_read_handler("drop_prob", read_handler, h_sample);
-    add_write_handler("drop_prob", prob_write_handler, h_sample);
     add_data_handlers("active", Handler::OP_READ | Handler::OP_WRITE | Handler::CHECKBOX, &_active);
-    add_data_handlers("burst", Handler::OP_READ | Handler::OP_WRITE, &_burst);
+    add_data_handlers("N", Handler::OP_READ | Handler::OP_WRITE, &_N);
+    add_data_handlers("K", Handler::OP_READ | Handler::OP_WRITE, &_K);
     add_data_handlers("drops", Handler::OP_READ, &_drops);
     add_write_handler("clear_drops", drop_write_handler, h_drops);
     add_write_handler("source", prefix_write_handler, h_source);
@@ -346,5 +334,5 @@ TargetedLoss::add_handlers()
 }
 
 CLICK_ENDDECLS
-EXPORT_ELEMENT(TargetedLoss)
-ELEMENT_MT_SAFE(TargetedLoss)
+EXPORT_ELEMENT(TargetedDropLastNofK)
+ELEMENT_MT_SAFE(TargetedDropLastNofK)
