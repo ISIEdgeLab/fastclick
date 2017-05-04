@@ -172,7 +172,6 @@ TargetedDropLastNofK::pull(int)
             // Have we seen _K packets, if so, reset count and return to _N portion
             _packet_count = _K;
         }
-        click_chatter("%d", _packet_count);
     }
     // We made it here, return the unsampled packet.
     return p;
