@@ -94,6 +94,7 @@ class FastUDPFlows : public BatchElement {
   unsigned _count;
   unsigned _limit;
   bool _active;
+  bool _stop;
 
   FastUDPFlows() CLICK_COLD;
   ~FastUDPFlows() CLICK_COLD;
@@ -108,11 +109,7 @@ class FastUDPFlows : public BatchElement {
   Packet *pull(int);
 
 #if HAVE_BATCH
-  PacketBatch *pull_batch(int port, unsigned max) {
-      PacketBatch *batch;
-      MAKE_BATCH(pull(port), batch, max);
-      return batch;
-  }
+  PacketBatch *pull_batch(int port, unsigned max);
 #endif
 
   void cleanup_flows();

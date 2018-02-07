@@ -146,6 +146,10 @@ int TXQueueDevice::initialize_tx(ErrorHandler * errh) {
         return errh->error("No threads end up in this queuedevice...? Aborting.");
     }
 
+    if (n_threads > _maxqueues) {
+        queue_share = n_threads / _maxqueues;
+    }
+
     if (n_threads >= _maxqueues)
         n_queues = _maxqueues;
     else
@@ -204,7 +208,7 @@ int RXQueueDevice::initialize_rx(ErrorHandler *errh) {
         usable_threads.negate();
     }
     }
-       for (int i = click_nthreads; i < usable_threads.size(); i++)
+       for (int i = click_max_cpu_ids(); i < usable_threads.size(); i++)
            usable_threads[i] = 0;
 
        if (router()->thread_sched()) {

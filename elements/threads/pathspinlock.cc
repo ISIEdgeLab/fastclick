@@ -30,26 +30,48 @@ int
 PathSpinlock::configure(Vector<String> &conf, ErrorHandler *errh)
 {
     String name;
-    if (Args(conf, this, errh).read_mp("LOCK", name).complete() < 0)
-	return -1;
-    if (!NameInfo::query(NameInfo::T_SPINLOCK, this, name, &_lock, sizeof(Spinlock *)))
-	return errh->error("cannot locate spinlock %s", name.c_str());
+    if (Args(conf, this, errh)
+            .read_p("LOCK", name)
+            .complete() < 0)
+        return -1;
+    if (!name) {
+        _lock = new Spinlock();
+        _lock_release = true;
+    } else {
+        _lock_release = false;
+        if (!NameInfo::query(NameInfo::T_SPINLOCK, this, name, &_lock, sizeof(Spinlock *)))
+            return errh->error("cannot locate spinlock %s", name.c_str());
+    }
     return 0;
 }
 
 
-void PathSpinlock::push(int,Packet *p)	{ 
+void PathSpinlock::push(int i,Packet *p)	{
 	_lock->acquire();
-	output(0).push(p);
+	output(i).push(p);
 	_lock->release();
 }
 
-Packet* PathSpinlock::pull(int)	{ 
+Packet* PathSpinlock::pull(int i)	{
 	_lock->acquire();
-	Packet* p = input(0).pull();
+	Packet* p = input(i).pull();
+	_lock->release();
+	return p;
+}
+
+#if HAVE_BATCH
+void PathSpinlock::push_batch(int i,PacketBatch *batch)	{
+	_lock->acquire();
+	output(i).push_batch(batch);
+	_lock->release();
+}
+PacketBatch* PathSpinlock::pull_batch(int i,unsigned max)	{
+	_lock->acquire();
+	PacketBatch* p = input(i).pull_batch(max);
 	_lock->release(); 
 	return p;
 }
- 
+#endif
+
 CLICK_ENDDECLS
 EXPORT_ELEMENT(PathSpinlock)

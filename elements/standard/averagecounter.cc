@@ -26,6 +26,7 @@ CLICK_DECLS
 
 AverageCounter::AverageCounter()
 {
+    _mp = false;
 }
 
 void
@@ -40,10 +41,10 @@ AverageCounter::reset()
 int
 AverageCounter::configure(Vector<String> &conf, ErrorHandler *errh)
 {
-  _ignore = 0;
-  if (Args(conf, this, errh).read_p("IGNORE", _ignore).complete() < 0)
+  double ignore = 0;
+  if (Args(conf, this, errh).read_p("IGNORE", ignore).complete() < 0)
     return -1;
-  _ignore *= CLICK_HZ;
+  _ignore = ignore * CLICK_HZ;
   return 0;
 }
 
@@ -58,15 +59,16 @@ AverageCounter::initialize(ErrorHandler *)
 PacketBatch *
 AverageCounter::simple_action_batch(PacketBatch *batch)
 {
-    uint32_t jpart = click_jiffies();
+    click_jiffies_t jpart = click_jiffies();
     if (_first == 0)
-		_first = jpart;
-    FOR_EACH_PACKET(batch,p) {
-		if (jpart - _first >= _ignore) {
-		_count++;
-		_byte_count += p->length();
-		}
-    }
+        _first.compare_swap(0, jpart);
+    if (jpart - _first >= _ignore) {
+        uint64_t l = 0;
+        FOR_EACH_PACKET(batch,p) {
+            l+=p->length();
+        }
+		add_count(batch->count(), l);
+	}
     _last = jpart;
     return batch;
 }
@@ -75,12 +77,11 @@ AverageCounter::simple_action_batch(PacketBatch *batch)
 Packet *
 AverageCounter::simple_action(Packet *p)
 {
-    uint32_t jpart = click_jiffies();
+    click_jiffies_t jpart = click_jiffies();
     if (_first == 0)
-    	_first = jpart;
+	_first.compare_swap(0, jpart);
     if (jpart - _first >= _ignore) {
-	_count++;
-	_byte_count += p->length();
+	    add_count(1,p->length());
     }
     _last = jpart;
     return p;
@@ -116,6 +117,9 @@ averagecounter_read_rate_handler(Element *e, void *thunk)
   d -= c->ignore();
   if (d < 1) d = 1;
   uint64_t count = get_count(c, user_data);
+  if (user_data == 4) {
+      return String((double)d / CLICK_HZ);
+  }
 
 #if CLICK_USERLEVEL
   return String(((double) count * CLICK_HZ) / d);
@@ -149,9 +153,16 @@ AverageCounter::add_handlers()
   add_read_handler("byte_rate", averagecounter_read_rate_handler, 1);
   add_read_handler("bit_rate", averagecounter_read_rate_handler, 2);
   add_read_handler("link_rate", averagecounter_read_rate_handler, 3);
+  add_read_handler("time", averagecounter_read_rate_handler, 4);
   add_write_handler("reset", averagecounter_reset_write_handler, 0, Handler::BUTTON);
+}
+
+AverageCounterMP::AverageCounterMP()
+{
+    _mp = true;
 }
 
 CLICK_ENDDECLS
 EXPORT_ELEMENT(AverageCounter)
-ELEMENT_MT_SAFE(AverageCounter)
+EXPORT_ELEMENT(AverageCounterMP)
+ELEMENT_MT_SAFE(AverageCounterMP)

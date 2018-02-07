@@ -111,12 +111,21 @@ class ICMPPingRewriter : public IPRewriterBase { public:
     void destroy_flow(IPRewriterFlow *flow);
 
     void push(int, Packet *);
+#if HAVE_BATCH
+    void push_batch(int, PacketBatch *);
+#endif
 
     void add_handlers() CLICK_COLD;
 
   private:
+    int process(int, Packet *);
+#if HAVE_USER_MULTITHREAD
+    unsigned _maps_no;
+    SizedHashAllocator<sizeof(ICMPPingFlow)> *_allocator;
+#else
+    SizedHashAllocator<sizeof(ICMPPingFlow)> _allocator[CLICK_CPU_MAX];
+#endif
 
-    SizedHashAllocator<sizeof(ICMPPingFlow)> _allocator;
     unsigned _annos;
 
     static String dump_mappings_handler(Element *, void *);
@@ -127,9 +136,9 @@ class ICMPPingRewriter : public IPRewriterBase { public:
 inline void
 ICMPPingRewriter::destroy_flow(IPRewriterFlow *flow)
 {
-    unmap_flow(flow, _map);
+    unmap_flow(flow, _map[click_current_cpu_id()]);
     static_cast<ICMPPingFlow *>(flow)->~ICMPPingFlow();
-    _allocator.deallocate(flow);
+    _allocator[click_current_cpu_id()].deallocate(flow);
 }
 
 CLICK_ENDDECLS

@@ -18,9 +18,37 @@
 
 #include <click/config.h>
 #include <click/dpdkdevice.hh>
+#include <click/element.hh>
+#include <click/userutils.hh>
 #include <rte_errno.h>
 
 CLICK_DECLS
+
+DPDKDevice::DPDKDevice() : port_id(-1), info() {
+}
+
+DPDKDevice::DPDKDevice(unsigned port_id) : port_id(port_id) {
+};
+
+uint16_t DPDKDevice::get_device_vendor_id()
+{
+    return info.vendor_id;
+}
+
+String DPDKDevice::get_device_vendor_name()
+{
+    return info.vendor_name;
+}
+
+uint16_t DPDKDevice::get_device_id()
+{
+    return info.device_id;
+}
+
+const char *DPDKDevice::get_device_driver()
+{
+    return info.driver;
+}
 
 /* Wraps rte_eth_dev_socket_id(), which may return -1 for valid ports when NUMA
  * is not well supported. This function will return 0 instead in that case. */
@@ -80,7 +108,7 @@ bool DPDKDevice::alloc_pktmbufs()
 
 
     if (max_socket == -1)
-        return false;
+        max_socket = 0;
 
     _nr_pktmbuf_pools = max_socket + 1;
 
@@ -128,6 +156,54 @@ struct rte_mempool *DPDKDevice::get_mpool(unsigned int socket_id) {
     return _pktmbuf_pools[socket_id];
 }
 
+/**
+ * Extracts from 'info' what is after the 'key'.
+ * E.g. an expected input is:
+ * XX:YY.Z Ethernet controller: Mellanox Technologies MT27700 Family [ConnectX-4]
+ * and we want to keep what is after our key 'Ethernet controller: '.
+ *
+ * @param info string to parse
+ * @param key substring to indicate the new index
+ * @return substring of info that succeeds the key
+ */
+static String parse_pci_info(String info, String key)
+{
+    String s;
+
+    // Extract what is after the keyword
+    s = info.substring(info.find_left(key) + key.length());
+    if (s.empty()) {
+        return String();
+    }
+
+    // Find the position of the delimiter
+    int pos = s.find_left(':') + 2;
+    if (pos < 0) {
+        return String();
+    }
+
+    // Extract what comes after the delimiter
+    s = s.substring(pos, s.find_left("\n") - pos);
+    if (s.empty()) {
+        return String();
+    }
+
+    return s;
+}
+
+/**
+ * Keeps the left-most substring of 'str'
+ * until the first occurence of the delimiter.
+ *
+ * @param str string to parse
+ * @param delimiter character that indicates where to stop
+ * @return substring of str that preceds the delimiter
+ */
+static String keep_token_left(String str, char delimiter)
+{
+    return str.substring(0, str.find_left(delimiter));
+}
+
 int DPDKDevice::initialize_device(ErrorHandler *errh)
 {
     struct rte_eth_conf dev_conf;
@@ -138,23 +214,58 @@ int DPDKDevice::initialize_device(ErrorHandler *errh)
 
     dev_conf.rxmode.mq_mode = ETH_MQ_RX_RSS;
     dev_conf.rx_adv_conf.rss_conf.rss_key = NULL;
-    dev_conf.rx_adv_conf.rss_conf.rss_hf = ETH_RSS_IP;
+    dev_conf.rx_adv_conf.rss_conf.rss_hf = ETH_RSS_IP | ETH_RSS_UDP | ETH_RSS_IP;
+
+    // Obtain general device information
+    if (dev_info.pci_dev) {
+        info.vendor_id = dev_info.pci_dev->id.vendor_id;
+        info.device_id = dev_info.pci_dev->id.device_id;
+    }
+    info.driver = dev_info.driver_name;
+    info.vendor_name = "Unknown";
+
+    // Combine vendor and device IDs
+    char vendor_and_dev[10];
+    sprintf(vendor_and_dev, "%x:%x", info.vendor_id, info.device_id);
+
+    // Retrieve more information about the vendor of this NIC
+    String dev_pci = shell_command_output_string("lspci -d " + String(vendor_and_dev), "", errh);
+    String long_vendor_name = parse_pci_info(dev_pci, "Ethernet controller");
+    if (!long_vendor_name.empty()) {
+        info.vendor_name = keep_token_left(long_vendor_name, ' ');
+    }
 
     //We must open at least one queue per direction
     if (info.rx_queues.size() == 0) {
         info.rx_queues.resize(1);
-        info.n_rx_descs = 64;
+        info.n_rx_descs = DEF_DEV_RXDESC;
     }
     if (info.tx_queues.size() == 0) {
         info.tx_queues.resize(1);
-        info.n_tx_descs = 64;
+        info.n_tx_descs = DEF_DEV_TXDESC;
     }
 
-    if (rte_eth_dev_configure(port_id, info.rx_queues.size(), info.tx_queues.size(),
-                              &dev_conf) < 0)
+    if (info.rx_queues.size() > dev_info.max_rx_queues) {
+        return errh->error("Port %d can only use %d RX queues, use MAXQUEUES to set the maximum number of queues or N_QUEUES to strictly define it.");
+    }
+    if (info.tx_queues.size() > dev_info.max_tx_queues) {
+        return errh->error("Port %d can only use %d TX queues, use MAXQUEUES to set the maximum number of queues or N_QUEUES to strictly define it.");
+    }
+
+    if (info.n_rx_descs < dev_info.rx_desc_lim.nb_min || info.n_rx_descs > dev_info.rx_desc_lim.nb_max) {
+        return errh->error("The number of receive descriptors is %d but needs to be between %d and %d",info.n_rx_descs, dev_info.rx_desc_lim.nb_min, dev_info.rx_desc_lim.nb_max);
+    }
+
+    if (info.n_tx_descs < dev_info.tx_desc_lim.nb_min || info.n_tx_descs > dev_info.tx_desc_lim.nb_max) {
+        return errh->error("The number of transmit descriptors is %d but needs to be between %d and %d",info.n_tx_descs, dev_info.tx_desc_lim.nb_min, dev_info.tx_desc_lim.nb_max);
+    }
+
+    int ret;
+    if ((ret = rte_eth_dev_configure(port_id, info.rx_queues.size(), info.tx_queues.size(),
+                              &dev_conf)) < 0)
         return errh->error(
-            "Cannot initialize DPDK port %u with %u RX and %u TX queues",
-            port_id, info.rx_queues.size(), info.tx_queues.size());
+            "Cannot initialize DPDK port %u with %u RX and %u TX queues.\nError %d : %s",
+            port_id, info.rx_queues.size(), info.tx_queues.size(), ret,strerror(ret));
     struct rte_eth_rxconf rx_conf;
 #if RTE_VERSION >= RTE_VERSION_NUM(2,0,0,0)
     memcpy(&rx_conf, &dev_info.default_rxconf, sizeof rx_conf);
@@ -202,7 +313,18 @@ int DPDKDevice::initialize_device(ErrorHandler *errh)
     if (info.promisc)
         rte_eth_promiscuous_enable(port_id);
 
+    if (info.mac != EtherAddress()) {
+        struct ether_addr addr;
+        memcpy(&addr,info.mac.data(),sizeof(struct ether_addr));
+        rte_eth_dev_default_mac_addr_set(port_id, &addr);
+    }
+
     return 0;
+}
+
+void DPDKDevice::set_mac(EtherAddress mac) {
+    assert(!_is_initialized);
+    info.mac = mac;
 }
 
 /**
@@ -300,7 +422,7 @@ int DPDKDevice::initialize(ErrorHandler *errh)
 #endif
 
     const unsigned n_ports = rte_eth_dev_count();
-    if (n_ports == 0)
+    if (n_ports == 0 && _devs.size() > 0)
         return errh->error("No DPDK-enabled ethernet port found");
 
     for (HashTable<unsigned, DPDKDevice>::const_iterator it = _devs.begin();
@@ -309,7 +431,7 @@ int DPDKDevice::initialize(ErrorHandler *errh)
             return errh->error("Cannot find DPDK port %u", it.key());
 
     if (!alloc_pktmbufs())
-        return errh->error("Could not allocate packet MBuf pools");
+        return errh->error("Could not allocate packet MBuf pools : error %d (%s)",rte_errno,rte_strerror(rte_errno));
 
     if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
         for (HashTable<unsigned, DPDKDevice>::iterator it = _devs.begin();
@@ -383,12 +505,85 @@ DPDKDeviceArg::parse(const String &str, DPDKDevice* &result, const ArgContext &c
     return true;
 }
 
+DPDKRing::DPDKRing() :
+    _message_pool(0),
+       _numa_zone(0), _burst_size(0), _flags(0), _ring(0),
+       _count(0), _MEM_POOL("") {
+}
+
+DPDKRing::~DPDKRing() {
+
+}
+
+int
+DPDKRing::parse(Args* args) {
+    bool spenq = false;
+    bool spdeq = false;
+    String origin;
+    String destination;
+    _flags = 0;
+    const Element* e = args->context();
+    ErrorHandler* errh = args->errh();
+
+    if (args ->  read_p("MEM_POOL",  _MEM_POOL)
+            .read_p("FROM_PROC", origin)
+            .read_p("TO_PROC",   destination)
+            .read("BURST",        _burst_size)
+            .read("NDESC",        _ndesc)
+            .read("NUMA_ZONE",    _numa_zone)
+            .read("SP_ENQ", spenq)
+            .read("SC_DEQ", spdeq)
+            .execute() < 0)
+        return -1;
+
+    if (spenq)
+        _flags |= RING_F_SP_ENQ;
+    if (spdeq)
+        _flags |= RING_F_SC_DEQ;
+
+    if ( _MEM_POOL.empty() || (_MEM_POOL.length() == 0) ) {
+        _MEM_POOL = "0";
+    }
+
+    if (origin.empty() || destination.empty() ) {
+        errh->error("Enter FROM_PROC and TO_PROC names");
+        return -1;
+    }
+
+    if ( _ndesc == 0 ) {
+        _ndesc = DPDKDevice::DEF_RING_NDESC;
+        click_chatter("Default number of descriptors is set (%d)\n",
+                        e->name().c_str(), _ndesc);
+    }
+
+    _MEM_POOL = DPDKDevice::MEMPOOL_PREFIX + _MEM_POOL;
+
+    // If user does not specify the port number
+    // we assume that the process belongs to the
+    // memory zone of device 0.
+    // TODO: Search the Click DAG to find a FromDPDKDevice, take its' port_id
+    //       and use _numa_zone = DPDKDevice::get_port_numa_node(_port_id);
+    if ( _numa_zone < 0 ) {
+        click_chatter("[%s] Assuming NUMA zone 0\n", e->name().c_str());
+        _numa_zone = 0;
+    }
+
+    _PROC_1 = origin+"_2_"+destination;
+    _PROC_2 = destination+"_2_"+origin;
+
+    return 0;
+}
+
 #if HAVE_DPDK_PACKET_POOL
 int DPDKDevice::NB_MBUF = 32*4096*2; //Must be able to fill the packet data pool, and then have some packets for IO
 #else
 int DPDKDevice::NB_MBUF = 65536;
 #endif
+#ifdef RTE_MBUF_DEFAULT_BUF_SIZE
+int DPDKDevice::MBUF_DATA_SIZE = RTE_MBUF_DEFAULT_BUF_SIZE;
+#else
 int DPDKDevice::MBUF_DATA_SIZE = 2048 + RTE_PKTMBUF_HEADROOM;
+#endif
 int DPDKDevice::MBUF_SIZE = MBUF_DATA_SIZE 
                           + sizeof (struct rte_mbuf);
 int DPDKDevice::MBUF_CACHE_SIZE = 256;
@@ -400,10 +595,12 @@ int DPDKDevice::TX_HTHRESH = 0;
 int DPDKDevice::TX_WTHRESH = 0;
 String DPDKDevice::MEMPOOL_PREFIX = "click_mempool_";
 
+unsigned DPDKDevice::DEF_DEV_RXDESC = 256;
+unsigned DPDKDevice::DEF_DEV_TXDESC = 256;
+
 unsigned DPDKDevice::DEF_RING_NDESC = 1024;
 unsigned DPDKDevice::DEF_BURST_SIZE = 32;
 
-unsigned DPDKDevice::RING_FLAGS = 0;
 unsigned DPDKDevice::RING_SIZE  = 64;
 unsigned DPDKDevice::RING_POOL_CACHE_SIZE = 32;
 unsigned DPDKDevice::RING_PRIV_DATA_SIZE  = 0;

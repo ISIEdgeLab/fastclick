@@ -52,6 +52,7 @@ CLICK_CXX_UNPROTECT
 // Include header structures so we can check their sizes with static_assert.
 #include <clicknet/ether.h>
 #include <clicknet/fddi.h>
+#include <clicknet/gtp.h>
 #include <clicknet/ip.h>
 #include <clicknet/ip6.h>
 #include <clicknet/icmp.h>
@@ -98,6 +99,9 @@ click_check_header_sizes()
     static_assert(sizeof(click_nd_sol) == 32, "click_nd_sol has the wrong size.");
     static_assert(sizeof(click_nd_adv) == 32, "click_nd_adv has the wrong size.");
     static_assert(sizeof(click_nd_adv2) == 24, "click_nd_adv2 has the wrong size.");
+
+    // <clicknet/ip.h>
+    static_assert(sizeof(click_gtp) == 8, "click_gtp has the wrong size.");
 
     // <clicknet/ip.h>
     static_assert(sizeof(click_ip) == 20, "click_ip has the wrong size.");
@@ -686,12 +690,7 @@ __thread int click_current_thread_id;
 // TIMEVALS AND JIFFIES
 
 #if CLICK_USERLEVEL
-
-# if CLICK_HZ != 1000
-#  error "CLICK_HZ must be 1000"
-# endif
 CLICK_DECLS
-
 void
 click_gettimeofday(timeval *tvp)
 {
@@ -699,10 +698,16 @@ click_gettimeofday(timeval *tvp)
 }
 
 click_jiffies_t
-click_jiffies()
+click_timestamp_jiffies(void*)
 {
-    return Timestamp::now().msecval();
+    return Timestamp::now_steady().msecval() / (1000 / CLICK_HZ);
 }
+
+#if HAVE_USER_TIMING
+void* click_jiffies_fct_data = 0;
+click_jiffies_fct_t click_jiffies_fct = click_timestamp_jiffies;
+#endif
+
 
 CLICK_ENDDECLS
 #endif

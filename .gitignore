@@ -2,6 +2,8 @@
 *.orig
 *.rej
 +*
+.dotest
+.idea
 .*.cmd
 .dotest
 Makefile

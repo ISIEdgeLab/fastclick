@@ -31,7 +31,7 @@ ToDPDKDevice::ToDPDKDevice() :
      _blocking = false;
      _burst = -1;
      _internal_tx_queue_size = 1024;
-     ndesc = 256;
+     ndesc = DPDKDevice::DEF_DEV_TXDESC;
 }
 
 ToDPDKDevice::~ToDPDKDevice()
@@ -100,14 +100,15 @@ int ToDPDKDevice::initialize(ErrorHandler *errh)
 
     for (unsigned i = 0; i < _iqueues.weight();i++) {
         _iqueues.get_value(i).pkts = new struct rte_mbuf *[_internal_tx_queue_size];
-        if (_timeout >= 0) {
-            _iqueues.get_value(i).timeout.assign(this);
-            _iqueues.get_value(i).timeout.initialize(this);
-            _iqueues.get_value(i).timeout.move_thread(i);
-        }
+        _iqueues.get_value(i).timeout.assign(this);
+        _iqueues.get_value(i).timeout.initialize(this);
+        _iqueues.get_value(i).timeout.move_thread(i);
     }
 
     _this_node = DPDKDevice::get_port_numa_node(_dev->port_id);
+
+    //To set is_fullpush, we need to compute passing threads
+    get_passing_threads();
 
     if (all_initialized()) {
         int ret =DPDKDevice::initialize(errh);
@@ -126,8 +127,8 @@ void ToDPDKDevice::cleanup(CleanupStage)
 
 void ToDPDKDevice::add_handlers()
 {
-    add_read_handler("n_sent", count_handler, 0);
-    add_read_handler("n_dropped", dropped_handler, 0);
+    add_read_handler("count", count_handler, 0);
+    add_read_handler("dropped", dropped_handler, 0);
     add_write_handler("reset_counts", reset_count_handler, 0, Handler::BUTTON);
 }
 
@@ -232,7 +233,7 @@ void ToDPDKDevice::push(int, Packet *p)
 
 #if !CLICK_PACKET_USE_DPDK
     if (likely(is_fullpush()))
-        p->safe_kill();
+        p->kill_nonatomic();
     else
         p->kill();
 #endif
@@ -272,7 +273,7 @@ void ToDPDKDevice::push_batch(int, PacketBatch *head)
             }
             next = p->next();
 #if !CLICK_PACKET_USE_DPDK
-        BATCH_RECYCLE_UNSAFE_PACKET(p);
+            BATCH_RECYCLE_PACKET_CONTEXT(p);
 #endif
             p = next;
         }
@@ -301,7 +302,7 @@ void ToDPDKDevice::push_batch(int, PacketBatch *head)
     //If non-blocking, drop all packets that could not be sent
     while (p) {
         next = p->next();
-        BATCH_RECYCLE_UNSAFE_PACKET(p);
+        BATCH_RECYCLE_PACKET_CONTEXT(p);
         p = next;
         add_dropped(1);
     }

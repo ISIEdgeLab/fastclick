@@ -1,6 +1,6 @@
 #ifndef CLICK_SIMPLESPINLOCK_HH
 #define CLICK_SIMPLESPINLOCK_HH
-#include <click/element.hh>
+#include <click/batchelement.hh>
 #include <click/sync.hh>
 CLICK_DECLS
 
@@ -24,22 +24,25 @@ CLICK_DECLS
  * =a SpinlockInfo, SpinlockAcquire, SpinlockRelease
  */
 
-class PathSpinlock : public Element { public:
+class PathSpinlock : public BatchElement { public:
 
     PathSpinlock()			: _lock(0) {}
     ~PathSpinlock()			{}
 
     const char *class_name() const	{ return "PathSpinlock"; }
-    const char *port_count() const	{ return PORTS_1_1; }
+    const char *port_count() const	{ return "1-/="; }
     const char *processing() const	{ return AGNOSTIC; }
 
     int configure(Vector<String> &, ErrorHandler *) CLICK_COLD;
 
-    void push(int,Packet *p);
-    Packet* pull(int);
-
+    void push(int,Packet *p) override;
+    Packet* pull(int) override;
+#if HAVE_BATCH
+    void push_batch(int,PacketBatch *p) override;
+    PacketBatch* pull_batch(int,unsigned) override;
+#endif
   private:
-
+    bool _lock_release;
     Spinlock *_lock;
 
 };
