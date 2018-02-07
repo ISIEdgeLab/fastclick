@@ -29,7 +29,13 @@ shift `expr $OPTIND - 1`
 [ ! -d $dest ] && echo "missing dest directory $dest" && exit 1
 
 hash="$1"
-[ -z "$hash" ] && hash=$( git log -1| head -1| cut -c 8-24 )
+if [ -z "$hash" ]; then
+   hash=$( git tag --points-at HEAD)
+   if [ -z "$hash" ]; then
+      echo "No tag for HEAD; using hash"
+      hash=$( git log -1| head -1| cut -c 8-24 )
+   fi
+fi
 
 # verify hash
 git log -1 $hash 1>/dev/null 2>/dev/null && rc=0 || rc=1
