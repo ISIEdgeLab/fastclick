@@ -4,7 +4,7 @@
 set -e
 
 base=$(basename $PWD)
-dest="/proj/edgect/share/dpdk/tarballs"
+dest="/proj/edgect/share/dpdk/src"
 
 usage()
 {
@@ -41,7 +41,7 @@ fi
 git log -1 $hash 1>/dev/null 2>/dev/null && rc=0 || rc=1
 [ $rc -eq 1 ] && echo "bad hash $hash" && exit 1
 
-echo -n "* Export $base-$hash.tar.gz?"
+echo -n "* Export $base-$hash.tar.gz to $dest? "
 read ans
 case $ans in
   Y|y|YES|yes) ;;
